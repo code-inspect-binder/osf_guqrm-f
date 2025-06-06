@@ -1,0 +1,522 @@
+---
+title: Ageing increases prosocial motivation - analysis
+  code
+author: "Anthony Gabay & Patricia Lockwood"
+date: "8 August 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# load required packages and functions
+
+install.packages("pacman")
+
+require(pacman)
+pacman::p_load(tidyverse, readxl, sjstats, effects, lme4, lmerTest, MASS, car, gridExtra, DataExplorer, broom, pander, scales, robustlmm, emmeans, Hmisc, psych, kableExtra)
+
+### Function to produce reporting stats for rlmer objects
+
+## Wald confidence interval code adapted from Ben Bolker at 
+## https://gist.github.com/kamermanpr/aaa598485b6e990017375359ff5f4533)
+
+## Then z-value and p-value generation added by Anthony Gabay 12/08/19
+
+stats.rlmerMod <- function(object, level = 0.95) {
+  
+  # Extract beta coefficients
+  beta <- fixef(object)
+  
+  # Extract names of coefficients
+  parm <- names(beta)
+  
+  # Extract standard errors for the coefficients
+  se <- sqrt(diag(vcov(object)))
+  
+  # Set level of confidence interval
+  conf.level <- qnorm((1 + level) / 2)
+  
+  # Calculate z value
+  z = beta/se
+  
+  # Calculate CI and create table
+  ctab <- cbind(beta,
+                beta - (conf.level * se), 
+                beta + (conf.level * se),
+                se,
+                z,
+                2*pnorm(-abs(z)))
+  
+  
+  # label column names
+  colnames(ctab) <- c('beta',
+                      paste(100 * ((1 - level) / 2), '%'),
+                      paste(100 * ((1 + level) / 2), '%'),
+                      'SE',
+                      'z',
+                      'p')
+  
+ 
+  # Output
+  return(round(ctab[parm, ],3))
+  
+  
+}
+
+
+
+```
+
+## Analysis of discount (k) parameters from the winning model (2k1B)
+
+### Load and organise data
+
+```{r}
+
+### Load the k parameters and organise the data
+
+
+# loads data
+df.2k <- read_xlsx("ADD FILEPATH TO CSV FILE HERE", sheet = 2, col_names = T) 
+
+
+df.2k <- df.2k                                       %>%
+  gather(key = "agent", value = "k", self_k:other_k) %>%   # long format 
+  mutate(agent = factor(agent))                      %>%   # factorise agent
+  mutate(group = factor(group))                      %>%   # factorise group
+  mutate(ID = factor(ID))                                  # factorise ID
+
+
+```
+
+### Robust regression on k parameters
+
+```{r}
+
+### Use robust linear mixed effects model to analyse the data due to heavily skewed distribution
+model.rlmer.2k <- rlmer(k ~ agent*group + (1|ID), data = df.2k)
+
+# Pull out stats
+stats.2k <- stats.rlmerMod(model.rlmer.2k)
+
+### Plot the ks
+
+## Organise data to get standard errors
+plt.data <- df.2k %>%
+  dplyr::group_by(agent, group) %>%
+  summarise(n = n(), mean = mean(k), sd = sd(k), se = sd/sqrt(n))
+
+# Bar plots
+plt.2k <- ggplot(plt.data, aes(x=agent, y=mean, fill = group)) +
+  geom_bar(stat= "identity", position=position_dodge()) +
+  geom_errorbar(aes(ymin = mean-se, ymax = mean+se), width=.1,
+                 position=position_dodge(.9))
+
+```
+
+### Wilcoxon signed rank test on self and other ks for each group separately
+
+```{r}
+
+# younger group, self vs other
+wil.young <- wilcox.test(df.2k$k[df.2k$group == "young" & df.2k$agent == "other_k"], # self
+            df.2k$k[df.2k$group == "young" & df.2k$agent == "self_k"],  # other
+            paired = TRUE, conf.int = TRUE)
+
+
+# older group, self vs other
+wil.older <- wilcox.test(df.2k$k[df.2k$group == "old" & df.2k$agent == "other_k"], # self
+            df.2k$k[df.2k$group == "old" & df.2k$agent == "self_k"],  # other
+            paired = TRUE)
+
+# Self, young vs older
+wil.self <- wilcox.test(df.2k$k[df.2k$group == "young" & df.2k$agent == "self_k"],
+                        df.2k$k[df.2k$group == "old" & df.2k$agent == "self_k"],
+            paired = FALSE)
+
+# Other, young vs older
+wil.other <- wilcox.test(df.2k$k[df.2k$group == "young" & df.2k$agent== "other_k"],
+                        df.2k$k[df.2k$group == "old" & df.2k$agent == "other_k"],
+            paired = FALSE)
+
+# calculate the z statistic
+Zstat.young <- qnorm(wil.young$p.value/2)
+Zstat.older <- qnorm(wil.older$p.value/2)
+Zstat.self  <- qnorm(wil.self$p.value/2)
+Zstat.other <- qnorm(wil.other$p.value/2)
+
+
+``` 
+
+
+## Analysing the choice behaviour
+
+### GLMM of choice data
+
+```{r}
+
+# Load the data
+data.pMyO = read_xlsx(
+  "ADD FILEPATH TO CSV FILE HERE.xlsx", 
+  col_names = T)
+
+# Tidy the data
+data.pMyO.glmm <- 
+  data.pMyO                         %>%  # renames variable
+  
+  filter(Choice < 2)                %>%  # removes missing data
+  mutate(ID = factor(ID))           %>%  # recodes as factor
+  mutate(Choice = factor(Choice))   %>%  # recodes as factor
+  mutate(Reward = factor(Reward))   %>%  # recodes as factor
+  mutate(Effort = factor(Effort))   %>%  # recodes as factor
+  mutate(Agent = factor(Agent))     %>%  # recodes as factor
+  mutate(Success = factor(Success)) %>%  # recodes as factor
+  mutate(Group = factor(Group))          # recodes as factor
+
+
+
+## Access the choice data model
+model.4way <- PM_models[[1]]
+
+
+
+model.4way <- glmer(Choice ~ Group*Agent*Effort*Reward + (1 |ID), 
+                     data = data.pMyO.glmm, family = 'binomial', 
+                     control=glmerControl(optimizer="bobyqa",optCtrl=list(maxfun=2e5)))
+ 
+
+Anova(model.4way, type = 2)
+
+### Plot the choice data
+
+choice <- 
+  data.pMyO.glmm                          %>%
+  mutate(Choice = as.numeric(Choice)-1)   %>%
+  group_by(ID, Group, Agent)              %>%
+  summarise(mean_choice = mean(Choice))
+ 
+choice.plt <- ggplot(choice, aes(x = Group, y = mean_choice, fill = Agent)) +
+  geom_bar(stat =  "summary", fun.y = "mean", position=position_dodge()) 
+
+
+```
+
+### Post-hoc comparisons of choice data
+
+
+```{r}
+
+## post-hoc tests on the 4-way interation using emmeams (extracts marginal means from the model)
+
+# extracts marginal effects for the interaction and then contrasts by effort level
+emms.4way <- emmeans(model.4way, ~ Agent*Effort*Group*Reward)
+
+con <- contrast(emms.4way, interaction = c( "poly"), by = "Agent")
+con
+
+```
+
+```{r}
+
+## small function to extract odds ratio and CIs after running emmeans.
+# extract effect size (Odds Ratio) of the comparisons and their 95% CI
+OR <- function(contrast_obj){
+  
+  contrast_obj <- as.data.frame(contrast_obj) %>%
+    mutate(OR = exp(estimate))                %>%
+    mutate(LL = exp(estimate-1.96*SE))        %>%
+    mutate(UL = exp(estimate+1.96*SE))
+  
+}
+  
+  
+
+## emmeans extracts estimated marginal means from the model. 
+
+# Pulls the marginal means for each combination of agent and group, and their SE
+agent.group <- emmeans(model.4way,  ~ Agent*Group)
+
+# Creates contrasts to explore the interaction
+ag <- contrast(agent.group, list(
+                           young_self.vs.old_self = c(1,0,-1,0),
+                           young_other.vs.old_other = c(0,1,0,-1)), 
+         adjust = "Bonferroni")   # each contrast is significant except the young self vs old self
+
+ag <- OR(ag)
+
+
+## now do this for the other interactions
+
+# group x effort
+group.effort <- emmeans(model.4way,  ~ Group*Effort)
+
+# This creates contrasts to explore the interaction
+ge <-contrast(group.effort, list(young2.vs.old2 = c(1,-1,0,0,0,0,0,0,0,0),
+                           young3.vs.old3 = c(0,0,1,-1,0,0,0,0,0,0),
+                           young4.vs.old4 = c(0,0,0,0,1,-1,0,0,0,0),
+                           young5.vs.old5 = c(0,0,0,0,0,0,1,-1,0,0),
+                           young6.vs.old6 = c(0,0,0,0,0,0,0,0,1,-1)), 
+         adjust = "Bonferroni")   # each contrast is significant except the first
+
+ge <- OR(ge)
+  
+# agent x effort
+agent.effort <- emmeans(model.4way,  ~ Agent*Effort)
+
+# This creates contrasts to explore the interaction
+ae <- contrast(agent.effort, list(two = c(-1,1,0,0,0,0,0,0,0,0),
+                                  three = c(0,0,-1,1,0,0,0,0,0,0),
+                                  four = c(0,0,0,0,-1,1,0,0,0,0),
+                                  five = c(0,0,0,0,0,0,-1,1,0,0),
+                                  six = c(0,0,0,0,0,0,0,0,-1,1)), 
+         adjust = "Bonferroni")   # each contrast is significant except the first
+
+# calculate ORs and Cis
+ae <- OR(ae)
+
+
+
+# group x reward
+group.reward <- emmeans(model.4way,  ~ Group*Reward)
+
+# This creates contrasts to explore the interaction
+gr <- contrast(group.reward, list(two = c(-1,1,0,0,0,0,0,0,0,0),
+                                  three = c(0,0,-1,1,0,0,0,0,0,0),
+                                  four = c(0,0,0,0,-1,1,0,0,0,0),
+                                  five = c(0,0,0,0,0,0,-1,1,0,0),
+                                  six = c(0,0,0,0,0,0,0,0,-1,1)), 
+         adjust = "Bonferroni")   # each contrast is significant except the first
+
+# calculate ORs and Cis
+gr <- OR(gr)
+
+
+# agent x reward
+agent.reward <- emmeans(model.4way,  ~ Agent*Reward)
+
+# This creates contrasts to explore the interaction
+ar <- contrast(agent.reward, list(two = c(-1,1,0,0,0,0,0,0,0,0),
+                                  three = c(0,0,-1,1,0,0,0,0,0,0),
+                                  four = c(0,0,0,0,-1,1,0,0,0,0),
+                                  five = c(0,0,0,0,0,0,-1,1,0,0),
+                                  six = c(0,0,0,0,0,0,0,0,-1,1)), 
+         adjust = "Bonferroni")   # each contrast is significant except the first
+
+# calculate ORs and Cis
+ar <- OR(ar)
+
+
+```
+
+## Analysis of the force data
+
+### LLM of force data
+
+```{r}
+
+# Tidy data
+
+data.pMyOfor.glmm <- 
+  data.pMyO                         %>%  # renames variable
+  
+  filter(Choice == 1)               %>%  # removes unsuccesful data
+  mutate(ID = factor(ID))           %>%  # recodes as factor
+  mutate(Choice = factor(Choice))   %>%  # recodes as factor
+  mutate(Reward = factor(Reward))   %>%  # recodes as factor
+  mutate(Effort = factor(Effort))   %>%  # recodes as factor
+  mutate(Agent = factor(Agent))     %>%  # recodes as factor
+  mutate(Success = factor(Success)) %>%  # recodes as factor
+  mutate(Group = factor(Group))          # recodes as factor
+
+
+# Extracting the force model
+model.4waylmerID <- PM_models[[2]] 
+
+
+## linear regressions on force with 4 way - random effect of subject only
+model.4waylmerID <- lmer(Force_norm ~ Group*Effort*Reward*Agent + (1 | ID), data = data.pMyOfor.glmm) 
+
+kable(round(Anova(model.4waylmerID, type = 2),3)) %>% kable_styling()
+
+### plot the force data
+
+force <-
+  data.pMyOfor.glmm                 %>%
+  filter(Choice == 1)               %>%
+  group_by(ID, Group, Agent)        %>%
+  summarise(mean_force = mean(Force_norm))
+
+force.plt <- ggplot(force, aes(x = Group, y = mean_force, fill = Agent)) +
+  geom_bar(stat =  "summary", fun.y = "mean", position=position_dodge()) 
+
+```
+
+### Post hoc tests on the force data
+
+```{r}
+
+## post-hoc tests on the 3-way interation using emmeams (extracts marginal means from the model)
+
+# extracts marginal effects for the interaction and then contrasts by effort level
+emms.3way <- emmeans(model.4waylmerID, ~ Agent*Effort*Group)
+
+con <- contrast(emms.3way, interaction = c( "poly"), by = "Effort")
+
+
+```
+
+### t-test on the success rates across groups
+
+```{r}
+
+success <-
+  data.pMyO.glmm %>%
+  mutate(Success = as.numeric(Success)-1) %>%
+  group_by(ID, Group) %>%
+  summarise(mean_succ = mean(Success)) 
+
+success.t <- t.test(success$mean_succ[success$Group == 1], 
+                    success$mean_succ[success$Group == 2])
+
+```
+
+## Individual differences in self-reported positivity and decision-making
+
+
+```{r}
+
+# load the debrief file
+
+
+data.debrief <- read_csv(
+  
+"ADD FILEPATH TO CSV FILE HERE", col_names = T) %>%
+  
+  dplyr::select(ID_Code, Group, Credits_feeling_Self, Credits_feeling_Other,
+         Self_K, Other_K, other_k_minus_self) %>%
+  
+  mutate(ID_Code = factor(ID_Code),
+         Group = factor(Group))
+
+
+```
+
+### Correlations between positivity and k values
+
+```{r}
+
+# correlations
+
+debrief_corr.young.self <- 
+  rcorr(data.debrief$Self_K[data.debrief$Group == 1],
+        data.debrief$Credits_feeling_Self[data.debrief$Group == 1],
+        type = "pearson")
+
+debrief_corr.young.other <- 
+  rcorr(data.debrief$Other_K[data.debrief$Group == 1],
+        data.debrief$Credits_feeling_Other[data.debrief$Group == 1],
+        type = "pearson")
+
+debrief_corr.old.self <- 
+  rcorr(data.debrief$Self_K[data.debrief$Group == 2],
+        data.debrief$Credits_feeling_Self[data.debrief$Group == 2],
+        type = "pearson")
+
+debrief_corr.old.other <- 
+  rcorr(data.debrief$Other_K[data.debrief$Group == 2],
+        data.debrief$Credits_feeling_Other[data.debrief$Group == 2],
+        type = "pearson") 
+
+# table of these correlations 
+debrief_corr.table <- tibble(
+  Group = c("Young", "Young", "Elderly", "Elderly"),
+  Agent = rep(c("Self", "Other"), 2),
+  r = c(debrief_corr.young.self$r[1,2],
+        debrief_corr.young.other$r[1,2],
+        debrief_corr.old.self$r[1,2],
+        debrief_corr.old.other$r[1,2]),
+  p = c(debrief_corr.young.self$P[1,2],
+        debrief_corr.young.other$P[1,2],
+        debrief_corr.old.self$P[1,2],
+        debrief_corr.old.other$P[1,2])
+  )
+
+
+kable(debrief_corr.table, caption = 
+        "Correlations between k parameter and feeling" ) %>%
+  kable_styling() 
+
+### test for difference in correlations between k values and subjective ratings  
+
+# young self vs elderly self
+r.self <- paired.r(-0.3282065, 0.1153552, n = 95, n2 = 91)
+
+# young other vs elderly other
+r.other <- paired.r(-0.3770540, -0.2086495, n = 95, n2 = 91)
+
+```
+
+### tests across groups
+
+```{r}
+
+## t tests of subjective ratings across groups
+
+t.self <- t.test(data.debrief$Credits_feeling_Self[data.debrief$Group == 1],
+                 data.debrief$Credits_feeling_Self[data.debrief$Group == 2])
+
+t.other <- t.test(data.debrief$Credits_feeling_Other[data.debrief$Group == 1],
+                 data.debrief$Credits_feeling_Other[data.debrief$Group == 2])
+
+t.young <- t.test(data.debrief$Credits_feeling_Self[data.debrief$Group == 1],
+                 data.debrief$Credits_feeling_Other[data.debrief$Group == 1], 
+                 paired = TRUE)
+
+t.old <- t.test(data.debrief$Credits_feeling_Self[data.debrief$Group == 2],
+                 data.debrief$Credits_feeling_Other[data.debrief$Group == 2], 
+                 paired = TRUE)
+
+# table of group tests
+
+debrief.t.group_table <- tibble(
+  'Subjective feeling for...' = c("Self", "Other"),
+  'Young mean' = c(mean(
+    data.debrief$Credits_feeling_Self[data.debrief$Group == 1]),
+    mean(data.debrief$Credits_feeling_Other[data.debrief$Group == 1])),
+  'Young SD' = c(sd(
+    data.debrief$Credits_feeling_Self[data.debrief$Group == 1]),
+    sd(data.debrief$Credits_feeling_Other[data.debrief$Group == 1])),
+  'Elderly mean' = c(mean(
+    data.debrief$Credits_feeling_Self[data.debrief$Group == 2]),
+    mean(data.debrief$Credits_feeling_Other[data.debrief$Group == 2])),
+  'Elderly SD' = c(sd(
+    data.debrief$Credits_feeling_Self[data.debrief$Group == 2]),
+    sd(data.debrief$Credits_feeling_Other[data.debrief$Group == 2])),
+  t = c(t.self$statistic, t.other$statistic),
+  df = c(t.self$parameter, t.other$parameter),
+  p = c(t.self$p.value, t.other$p.value)
+  
+)
+
+kable(debrief.t.group_table,
+      caption = "Differences between groups in positive feelings after winning
+      credits for each agent") %>% kable_styling()
+
+```
+
+### Analyse ratings data as a robust regression
+
+```{r}
+
+# data tidying
+data.ratings <- data.debrief %>%
+  gather('Credits_feeling_Self', 'Credits_feeling_Other', key = "agent", value = "feels")
+
+model.ratings <- rlmer(feels ~ Group*agent + (1|ID_Code), data = data.ratings)
+summary(model.ratings)
+
+stats.rlmerMod(model.ratings)
+
+```
+
